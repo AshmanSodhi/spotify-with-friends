@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Road Trip Music — Host</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  body { -webkit-tap-highlight-color: transparent; }
+  .btn { min-height: 52px; }
+</style>
+</head>
+<body class="bg-neutral-950 text-white min-h-screen">
+<div class="max-w-md mx-auto px-5 py-8 pb-16">
+
+  <h1 class="text-3xl font-extrabold tracking-tight">🚗 ROAD TRIP MUSIC</h1>
+  <p class="text-neutral-400 mt-1">Host connects Spotify once. Friends just search &amp; add.</p>
+
+  <div id="banner" class="hidden mt-4 rounded-xl px-4 py-3 text-sm font-medium"></div>
+
+  <!-- Spotify connection card -->
+  <div class="mt-6 rounded-2xl bg-neutral-900 border border-neutral-800 p-5">
+    <div class="flex items-center justify-between">
+      <div>
+        <div class="text-sm text-neutral-400">Spotify status</div>
+        <div id="spotifyStatus" class="text-lg font-bold">Checking…</div>
+      </div>
+      <div id="dot" class="w-4 h-4 rounded-full bg-neutral-600"></div>
+    </div>
+    <a href="/api/auth/spotify/login"
+       class="btn mt-4 flex items-center justify-center w-full rounded-xl bg-green-500 text-black font-bold text-lg hover:bg-green-400 active:scale-[.99]">
+      <span class="mr-2">♫</span> Connect Spotify
+    </a>
+    <button id="disconnectBtn" class="hidden mt-2 w-full text-sm text-neutral-400 underline">Disconnect</button>
+  </div>
+
+  <!-- Create room -->
+  <div class="mt-4 rounded-2xl bg-neutral-900 border border-neutral-800 p-5">
+    <h2 class="font-bold text-lg">1 &nbsp;·&nbsp; Create a room</h2>
+    <p class="text-sm text-neutral-400 mt-1">Room lasts 24 h. Share the link or QR with the car.</p>
+    <button id="createBtn"
+      class="btn mt-4 w-full rounded-xl bg-white text-black font-bold text-lg hover:bg-neutral-200 disabled:opacity-40">
+      Create Room
+    </button>
+    <div id="createErr" class="hidden mt-2 text-sm text-red-400"></div>
+  </div>
+
+  <!-- Room result -->
+  <div id="roomCard" class="hidden mt-4 rounded-2xl bg-green-950 border border-green-800 p-5">
+    <div class="text-green-300 font-bold">Your room is ready! 🎉</div>
+    <div class="mt-3 text-sm text-green-200/70">ROOM CODE</div>
+    <div id="roomCode" class="text-5xl font-black tracking-widest"></div>
+    <div class="mt-4 flex gap-2">
+      <button id="copyBtn" class="btn flex-1 rounded-xl bg-green-500 text-black font-bold">Copy Link</button>
+      <a id="openRoomBtn" href="#" class="btn flex-1 rounded-xl bg-white text-black font-bold flex items-center justify-center">Open Room</a>
+    </div>
+    <div id="shareLink" class="mt-2 text-xs break-all text-green-200/80"></div>
+    <div class="mt-4 flex flex-col items-center bg-white rounded-xl p-4">
+      <div id="qr"></div>
+      <div class="text-neutral-600 text-xs mt-2">Friends scan to join</div>
+    </div>
+    <button id="endBtn" class="mt-4 w-full text-sm text-red-300 underline">End room</button>
+  </div>
+
+  <div class="mt-8 text-xs text-neutral-500 leading-relaxed">
+    Playback stays in the Spotify app. This site never shows the queue and never stores it —
+    Spotify is the source of truth.
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/host/spotify/status', { credentials: 'same-origin' });
+    const j = await r.json();
+    if (j.connected) {
+      $('spotifyStatus').textContent = 'Connected ✓' + (j.display_name ? ' · ' + j.display_name : '');
+      $('dot').className = 'w-4 h-4 rounded-full bg-green-500';
+      $('disconnectBtn').classList.remove('hidden');
+    } else if (j.reauth_required) {
+      $('spotifyStatus').textContent = 'Reconnect needed ⚠';
+      $('dot').className = 'w-4 h-4 rounded-full bg-yellow-500';
+    } else {
+      $('spotifyStatus').textContent = 'Not connected';
+      $('dot').className = 'w-4 h-4 rounded-full bg-neutral-600';
+    }
+  } catch { $('spotifyStatus').textContent = 'Cannot reach server'; }
+}
+
+function banner(msg, ok) {
+  const b = $('banner');
+  b.textContent = msg;
+  b.className = 'mt-4 rounded-xl px-4 py-3 text-sm font-medium ' + (ok ? 'bg-green-900 text-green-200' : 'bg-red-900 text-red-200');
+}
+
+(function initBanner() {
+  const p = new URLSearchParams(location.search);
+  if (p.get('spotify') === 'connected') { banner('Spotify connected ✓ — now create a room.', true); history.replaceState({}, '', '/'); }
+  if (p.get('spotify') === 'denied') { banner('Spotify authorization was denied. Try again.', false); history.replaceState({}, '', '/'); }
+})();
+
+$('disconnectBtn').onclick = async () => {
+  await fetch('/api/auth/spotify/disconnect', { method: 'POST', credentials: 'same-origin' });
+  location.reload();
+};
+
+$('createBtn').onclick = async () => {
+  const btn = $('createBtn');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  $('createErr').classList.add('hidden');
+  try {
+    const r = await fetch('/api/rooms', { method: 'POST', credentials: 'same-origin' });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.message || 'Could not create room');
+    $('roomCard').classList.remove('hidden');
+    $('roomCode').textContent = j.room_code;
+    $('shareLink').textContent = j.join_url;
+    $('openRoomBtn').href = j.join_url;
+    $('qr').innerHTML = '';
+    new QRCode($('qr'), { text: j.join_url, width: 180, height: 180 });
+    localStorage.setItem('rtm_last_room', j.room_code);
+    $('roomCard').scrollIntoView({ behavior: 'smooth' });
+    $('endBtn').onclick = async () => {
+      if (!confirm('End this room for everyone?')) return;
+      await fetch(`/api/rooms/${j.room_code}/end`, { method: 'POST', credentials: 'same-origin' });
+      location.reload();
+    };
+  } catch (e) {
+    const el = $('createErr');
+    el.textContent = e.message + (e.message.includes('connect') ? ' — tap Connect Spotify first.' : '');
+    el.classList.remove('hidden');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create Room';
+  }
+};
+
+$('copyBtn').onclick = async () => {
+  const link = $('shareLink').textContent;
+  try { await navigator.clipboard.writeText(link); $('copyBtn').textContent = 'Copied ✓'; }
+  catch { prompt('Copy this link:', link); }
+  setTimeout(() => $('copyBtn').textContent = 'Copy Link', 1500);
+};
+
+refreshStatus();
+</script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Road Trip Music — Room</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { -webkit-tap-highlight-color: transparent; }
+  .btn { min-height: 52px; }
+  .add-btn { min-height: 48px; min-width: 96px; }
+  input { font-size: 16px; } /* stops iOS zoom */
+</style>
+</head>
+<body class="bg-neutral-950 text-white min-h-screen">
+<div class="max-w-md mx-auto px-5 py-6 pb-20">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-extrabold">🚗 ROAD TRIP MUSIC</h1>
+    <span id="roomBadge" class="text-sm font-mono bg-neutral-800 rounded-lg px-3 py-1"></span>
+  </div>
+
+  <div id="err" class="hidden mt-4 rounded-xl px-4 py-3 text-sm bg-red-900 text-red-200"></div>
+  <div id="toast" class="hidden mt-4 rounded-xl px-4 py-3 text-sm font-medium bg-green-900 text-green-200"></div>
+
+  <!-- Join step -->
+  <div id="joinCard" class="mt-6 rounded-2xl bg-neutral-900 border border-neutral-800 p-5">
+    <h2 class="font-bold text-lg">What's your name?</h2>
+    <input id="nameInput" placeholder="e.g. Rahul" maxlength="40" autocomplete="nickname"
+      class="mt-3 w-full rounded-xl bg-neutral-800 border border-neutral-700 px-4 py-3 outline-none focus:border-green-500" />
+    <button id="joinBtn" class="btn mt-3 w-full rounded-xl bg-green-500 text-black font-bold text-lg">Join Room</button>
+  </div>
+
+  <!-- Search step -->
+  <div id="searchCard" class="hidden mt-6">
+    <label class="text-sm text-neutral-400 font-medium">🔍 Search Spotify</label>
+    <input id="searchInput" placeholder="Song or artist…" autocomplete="off"
+      class="mt-2 w-full rounded-xl bg-neutral-800 border border-neutral-700 px-4 py-3 outline-none focus:border-green-500" />
+    <div id="stateLine" class="mt-2 text-sm text-neutral-500 h-5"></div>
+    <div id="results" class="mt-2 space-y-3"></div>
+  </div>
+</div>
+
+<script>
+const parts = location.pathname.split('/').filter(Boolean);
+const ROOM = (parts[1] || '').toUpperCase();
+document.getElementById('roomBadge').textContent = 'ROOM ' + ROOM;
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get token() { return localStorage.getItem('rtm_guest_' + ROOM); },
+  set token(v) { localStorage.setItem('rtm_guest_' + ROOM, v); },
+  get name() { return localStorage.getItem('rtm_name_' + ROOM); },
+  set name(v) { localStorage.setItem('rtm_name_' + ROOM, v); },
+};
+
+function showErr(msg) {
+  const e = $('err');
+  if (!msg) { e.classList.add('hidden'); return; }
+  e.textContent = msg; e.classList.remove('hidden');
+  clearTimeout(showErr._t);
+  showErr._t = setTimeout(() => e.classList.add('hidden'), 6000);
+}
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg; t.classList.remove('hidden');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add('hidden'), 3000);
+}
+function authHeaders() {
+  const t = store.token;
+  return t ? { 'Authorization': 'Bearer ' + t } : {};
+}
+
+// If a name+token already exists, skip straight to search.
+if (store.token && store.name) {
+  $('joinCard').classList.add('hidden');
+  $('searchCard').classList.remove('hidden');
+} else if (store.name) {
+  $('nameInput').value = store.name;
+}
+
+$('joinBtn').onclick = join;
+$('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+async function join() {
+  const name = $('nameInput').value.trim();
+  if (!name) { showErr('Please enter your name.'); return; }
+  const btn = $('joinBtn');
+  btn.disabled = true; btn.textContent = 'Joining…';
+  try {
+    const r = await fetch(`/api/rooms/${ROOM}/join`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: name }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.message || 'Could not join room');
+    store.token = j.guest_token; store.name = name;
+    $('joinCard').classList.add('hidden');
+    $('searchCard').classList.remove('hidden');
+    toast(`Welcome, ${name}! 👋`);
+    $('searchInput').focus();
+  } catch (e) { showErr(e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Join Room'; }
+}
+
+// ---- Search (debounced 400 ms, PRD §24) ----
+let debounce = null, lastQuery = '';
+$('searchInput').addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(doSearch, 400);
+});
+
+async function doSearch() {
+  const q = $('searchInput').value.trim();
+  if (q === lastQuery) return;
+  lastQuery = q;
+  const box = $('results');
+  if (!q) { box.innerHTML = ''; $('stateLine').textContent = ''; return; }
+  $('stateLine').textContent = 'Searching…';
+  try {
+    const r = await fetch(`/api/rooms/${ROOM}/search?q=${encodeURIComponent(q)}`, { headers: authHeaders() });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.message || 'Search failed');
+    render(j.tracks || []);
+  } catch (e) {
+    $('stateLine').textContent = '';
+    showErr(e.message);
+  }
+}
+
+function render(tracks) {
+  const box = $('results');
+  if (!tracks.length) { $('stateLine').textContent = 'No results'; box.innerHTML = ''; return; }
+  $('stateLine').textContent = tracks.length + ' result' + (tracks.length > 1 ? 's' : '');
+  box.innerHTML = '';
+  tracks.forEach((t) => {
+    const card = document.createElement('div');
+    card.className = 'rounded-2xl bg-neutral-900 border border-neutral-800 p-3 flex gap-3 items-center';
+    const img = t.album_image
+      ? `<img src="${t.album_image}" alt="" class="w-14 h-14 rounded-xl object-cover flex-shrink-0" loading="lazy"/>`
+      : `<div class="w-14 h-14 rounded-xl bg-neutral-700 flex items-center justify-center text-2xl flex-shrink-0">🎵</div>`;
+    card.innerHTML = `
+      ${img}
+      <div class="flex-1 min-w-0">
+        <div class="font-bold truncate">${escapeHtml(t.name)}</div>
+        <div class="text-sm text-neutral-400 truncate">${escapeHtml((t.artists || []).join(', '))}</div>
+        <div class="text-xs text-neutral-500 truncate">${escapeHtml(t.album || '')}</div>
+      </div>
+      <button class="add-btn rounded-xl bg-green-500 text-black font-bold px-4">+ Add</button>`;
+    const btn = card.querySelector('button');
+    btn.onclick = async () => {
+      // PRD §13: short UI lock against double-taps (not queue storage).
+      btn.disabled = true; btn.textContent = 'Adding…';
+      setTimeout(() => { btn.disabled = false; btn.textContent = '+ Add'; }, 1500);
+      try {
+        const r = await fetch(`/api/rooms/${ROOM}/queue`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ track_uri: t.uri }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.message || 'Could not add song');
+        toast(`✓ Added "${t.name}" to Spotify queue`);
+      } catch (e) { showErr(e.message + ' — tap Retry.'); }
+    };
+    box.appendChild(card);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Validate room on load so expired codes fail fast.
+(async () => {
+  try {
+    const r = await fetch(`/api/rooms/${ROOM}`);
+    const j = await r.json();
+    if (!r.ok) showErr(j.message || 'This room is not available.');
+  } catch { /* offline — search will surface it */ }
+})();
+</script>
+</body>
+</html>
