@@ -39,6 +39,17 @@
     <div id="stateLine" class="mt-2 text-sm text-neutral-500 h-5"></div>
     <div id="results" class="mt-2 space-y-3"></div>
   </div>
+
+  <!-- Live queue view (read-only, Spotify is the source of truth) -->
+  <div id="queueCard" class="hidden mt-6 rounded-2xl bg-neutral-900 border border-neutral-800 p-4">
+    <div class="flex items-center justify-between">
+      <h2 class="font-bold text-lg">🎶 Up Next</h2>
+      <button id="refreshQueueBtn" class="text-sm font-bold bg-neutral-800 rounded-lg px-4 py-2 active:scale-95">Refresh</button>
+    </div>
+    <div id="nowPlaying" class="mt-3"></div>
+    <div id="upNext" class="mt-3 space-y-2"></div>
+    <div id="queueHint" class="mt-2 text-xs text-neutral-500">Live from Spotify · auto-refreshes every 10 s</div>
+  </div>
 </div>
 
 <script>
@@ -73,9 +84,15 @@ function authHeaders() {
 }
 
 // If a name+token already exists, skip straight to search.
-if (store.token && store.name) {
+function showRoom() {
   $('joinCard').classList.add('hidden');
   $('searchCard').classList.remove('hidden');
+  $('queueCard').classList.remove('hidden');
+  fetchQueue();
+  startQueuePolling();
+}
+if (store.token && store.name) {
+  showRoom();
 } else if (store.name) {
   $('nameInput').value = store.name;
 }
@@ -96,8 +113,7 @@ async function join() {
     const j = await r.json();
     if (!r.ok) throw new Error(j.message || 'Could not join room');
     store.token = j.guest_token; store.name = name;
-    $('joinCard').classList.add('hidden');
-    $('searchCard').classList.remove('hidden');
+    showRoom();
     toast(`Welcome, ${name}! 👋`);
     $('searchInput').focus();
   } catch (e) { showErr(e.message); }
@@ -162,6 +178,7 @@ function render(tracks) {
         const j = await r.json();
         if (!r.ok) throw new Error(j.message || 'Could not add song');
         toast(`✓ Added "${t.name}" to Spotify queue`);
+        setTimeout(fetchQueue, 2000); // let Spotify catch up, then refresh Up Next
       } catch (e) { showErr(e.message + ' — tap Retry.'); }
     };
     box.appendChild(card);
@@ -170,6 +187,53 @@ function render(tracks) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---- Live queue view (read-only, auto-refresh 10 s, pauses when tab hidden) ----
+let queueTimer = null;
+$('refreshQueueBtn').onclick = fetchQueue;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopQueuePolling();
+  else if (!$('queueCard').classList.contains('hidden')) { fetchQueue(); startQueuePolling(); }
+});
+function startQueuePolling() {
+  stopQueuePolling();
+  queueTimer = setInterval(() => { if (!document.hidden) fetchQueue(); }, 10000);
+}
+function stopQueuePolling() {
+  if (queueTimer) { clearInterval(queueTimer); queueTimer = null; }
+}
+async function fetchQueue() {
+  try {
+    const r = await fetch(`/api/rooms/${ROOM}/now-playing`, { headers: authHeaders() });
+    const j = await r.json();
+    if (!r.ok) return; // room/auth errors already surface via search/join
+    renderQueue(j);
+  } catch { /* offline — skip silently until next poll */ }
+}
+function trackRow(t, badge) {
+  const img = t.album_image
+    ? `<img src="${t.album_image}" alt="" class="w-10 h-10 rounded-lg object-cover flex-shrink-0" loading="lazy"/>`
+    : `<div class="w-10 h-10 rounded-lg bg-neutral-700 flex items-center justify-center flex-shrink-0">🎵</div>`;
+  return `<div class="flex gap-2 items-center bg-neutral-800/60 rounded-xl p-2">`
+    + `${img}<div class="flex-1 min-w-0"><div class="text-sm font-bold truncate">${escapeHtml(t.name)}</div>`
+    + `<div class="text-xs text-neutral-400 truncate">${escapeHtml((t.artists || []).join(', '))}</div></div>`
+    + (badge || '') + `</div>`;
+}
+function renderQueue(j) {
+  const np = $('nowPlaying'), up = $('upNext');
+  if (j.no_active_device) {
+    np.innerHTML = `<div class="text-sm text-yellow-200/90">⏸ Nothing playing — host: open Spotify and press play.</div>`;
+    up.innerHTML = '';
+    return;
+  }
+  np.innerHTML = j.currently_playing
+    ? `<div class="text-xs text-green-400 font-bold mb-1">NOW PLAYING</div>` + trackRow(j.currently_playing)
+    : `<div class="text-sm text-neutral-400">Nothing playing right now.</div>`;
+  const q = j.queue || [];
+  up.innerHTML = q.length
+    ? `<div class="text-xs text-neutral-400 font-bold mt-1 mb-1">UP NEXT (${q.length})</div>` + q.slice(0, 10).map((t) => trackRow(t)).join('')
+    : `<div class="text-xs text-neutral-500 mt-1">Queue is empty — search above to add the first song!</div>`;
 }
 
 // Validate room on load so expired codes fail fast.

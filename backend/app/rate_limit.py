@@ -11,6 +11,7 @@ _BUCKETS: dict[str, deque[float]] = {}
 
 LIMITS = {
     "search": (30, 60.0),   # 30 searches / minute per key
+    "nowplaying": (30, 60.0),  # 30 queue-view reads / minute per key
     "queue": (12, 60.0),    # 12 queue adds / minute per key
     "join": (20, 60.0),     # 20 joins / minute per key
     "room_create": (10, 300.0),

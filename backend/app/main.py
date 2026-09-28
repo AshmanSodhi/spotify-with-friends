@@ -27,6 +27,7 @@ from .spotify import (
     build_authorize_url,
     exchange_code_for_tokens,
     get_current_user,
+    get_queue_state,
     get_valid_access_token,
     is_valid_track_uri,
     search_tracks,
@@ -310,6 +311,43 @@ async def search(
         return _err("SPOTIFY_REAUTH_REQUIRED", "The host needs to reconnect Spotify.", 409)
     except SpotifyApiError as e:
         return _err("SPOTIFY_API_ERROR", str(e) or "Spotify search failed. Try again.", 502)
+
+
+@app.get("/api/rooms/{room_code}/now-playing")
+async def now_playing(
+    room_code: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    host_session_id: str | None = Cookie(default=None, alias=HOST_COOKIE),
+    guest_token: str | None = Query(default=None),
+):
+    """Read-only live view of Spotify's queue. Nothing is stored server-side."""
+    room, err = _get_room_or_error(room_code)
+    if err:
+        return err
+    auth_header = authorization
+    if not auth_header and guest_token:
+        auth_header = f"Bearer {guest_token}"
+    who, err = _auth_context(room, host_session_id, auth_header)
+    if err:
+        return err
+    client_ip = request.client.host if request.client else "unknown"
+    allowed, retry = rate_limit.check(f"np:{client_ip}:{room['room_code']}", "nowplaying")
+    if not allowed:
+        return _err("RATE_LIMITED", f"Too many refreshes. Try again in {retry}s.", 429)
+    host = _get_host_session(room["host_session_id"])
+    if not host or not host.get("refresh_token"):
+        return _err("SPOTIFY_NOT_CONNECTED", "The host needs to connect Spotify.", 409)
+    try:
+        token = await get_valid_access_token(host)
+        return await get_queue_state(token)
+    except SpotifyReauthRequired:
+        return _err("SPOTIFY_REAUTH_REQUIRED", "The host needs to reconnect Spotify.", 409)
+    except SpotifyNoActiveDevice:
+        # Friendly empty state for polling UI (not an error).
+        return {"currently_playing": None, "queue": [], "no_active_device": True}
+    except SpotifyApiError as e:
+        return _err("SPOTIFY_API_ERROR", str(e) or "Spotify is unavailable. Try again.", 502)
 
 
 @app.post("/api/rooms/{room_code}/queue")

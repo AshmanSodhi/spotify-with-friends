@@ -104,3 +104,24 @@ def test_create_room_requires_spotify():
     r = c.post("/api/rooms")
     assert r.status_code == 401
     assert r.json()["error"] == "SPOTIFY_NOT_CONNECTED"
+
+
+def test_now_playing_view():
+    c = make_client()
+    sid = seed_host()
+    r = c.post("/api/rooms", cookies={"rtm_host": sid})
+    code = r.json()["room_code"]
+    r = c.post(f"/api/rooms/{code}/join", json={"display_name": "Rahul"})
+    token = r.json()["guest_token"]
+
+    r = c.get(
+        f"/api/rooms/{code}/now-playing", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["currently_playing"]["uri"].startswith("spotify:track:")
+    assert isinstance(body["queue"], list)
+
+    # unauthenticated view rejected
+    r = c.get(f"/api/rooms/{code}/now-playing")
+    assert r.status_code == 401

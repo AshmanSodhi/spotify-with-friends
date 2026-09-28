@@ -149,6 +149,45 @@ async def search_tracks(access_token: str, query: str, limit: int = 10) -> list[
     return out
 
 
+async def get_queue_state(access_token: str) -> dict:
+    """Read-only view of Spotify's queue. Never stored — returned straight through."""
+    if settings.MOCK_SPOTIFY:
+        return {"currently_playing": MOCK_TRACKS[0], "queue": MOCK_TRACKS[1:]}
+
+    def slim(t: dict | None) -> dict | None:
+        if not t:
+            return None
+        images = (t.get("album") or {}).get("images") or []
+        return {
+            "id": t.get("id"),
+            "uri": t.get("uri"),
+            "name": t.get("name"),
+            "artists": [a.get("name") for a in t.get("artists", [])],
+            "album": (t.get("album") or {}).get("name", ""),
+            "album_image": images[0]["url"] if images else "",
+        }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{API_BASE}/me/player/queue", headers={"Authorization": f"Bearer {access_token}"}
+        )
+    if resp.status_code == 401:
+        raise SpotifyReauthRequired("access token rejected")
+    if resp.status_code == 404:
+        raise SpotifyNoActiveDevice(
+            "No active Spotify device. Open Spotify on the host phone/computer and play something first."
+        )
+    if resp.status_code == 429:
+        raise SpotifyApiError("Spotify is rate-limiting us, try again in a moment.")
+    if resp.status_code != 200:
+        raise SpotifyApiError(f"queue read failed ({resp.status_code})")
+    data = resp.json()
+    return {
+        "currently_playing": slim(data.get("currently_playing")),
+        "queue": [s for t in data.get("queue", []) if (s := slim(t))],
+    }
+
+
 async def add_to_queue(access_token: str, track_uri: str) -> None:
     if settings.MOCK_SPOTIFY:
         if not is_valid_track_uri(track_uri) and track_uri not in {t["uri"] for t in MOCK_TRACKS}:
